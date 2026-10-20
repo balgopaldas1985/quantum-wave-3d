@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QuantumWave 3D — Schrödinger Wavefunction Simulator</title>
+    
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+        }
+
+        body, html {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #020617;
+            color: #38bdf8;
+        }
+
+        #webgl-canvas {
+            width: 100vw;
+            height: 100vh;
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 1;
+        }
+
+        .hud-panel {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            z-index: 10;
+            background: rgba(15, 23, 42, 0.85);
+            border: 1px solid rgba(56, 189, 248, 0.3);
+            backdrop-filter: blur(16px);
+            padding: 20px;
+            border-radius: 14px;
+            width: 320px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.7);
+        }
+
+        h1 {
+            font-size: 1.1rem;
+            letter-spacing: 1px;
+            margin-bottom: 14px;
+            color: #fff;
+            text-transform: uppercase;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .control-group {
+            margin-bottom: 12px;
+        }
+
+        label {
+            display: block;
+            font-size: 0.8rem;
+            color: #94a3b8;
+            margin-bottom: 4px;
+        }
+
+        select, input[type="range"] {
+            width: 100%;
+            background: #0f172a;
+            color: #38bdf8;
+            border: 1px solid rgba(56, 189, 248, 0.4);
+            border-radius: 6px;
+            padding: 8px;
+            outline: none;
+            font-size: 0.85rem;
+        }
+
+        .btn {
+            width: 100%;
+            padding: 10px;
+            background: linear-gradient(135deg, #0284c7, #6366f1);
+            border: none;
+            color: #fff;
+            font-weight: 600;
+            border-radius: 8px;
+            cursor: pointer;
+            margin-top: 8px;
+            transition: transform 0.2s, opacity 0.2s;
+        }
+
+        .btn:hover {
+            opacity: 0.9;
+            transform: translateY(-1px);
+        }
+
+        .status-box {
+            font-size: 0.8rem;
+            line-height: 1.4;
+            color: #cbd5e1;
+            background: rgba(0, 0, 0, 0.4);
+            padding: 10px;
+            border-radius: 8px;
+            border-left: 3px solid #38bdf8;
+            margin-top: 12px;
+        }
+    </style>
+
+    <!-- Three.js and OrbitControls -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+</head>
+<body>
+
+    <canvas id="webgl-canvas"></canvas>
+
+    <div class="hud-panel">
+        <h1><span>⚛️</span> QUANTUM LAB 3D</h1>
+
+        <div class="control-group">
+            <label for="barrierSelect">Potential Barrier V(r):</label>
+            <select id="barrierSelect" onchange="resetWavePacket()">
+                <option value="none">Free Particle (No Barrier)</option>
+                <option value="tunnel">Quantum Tunneling Wall</option>
+                <option value="double">Double Slit Barrier</option>
+                <option value="harmonic">Harmonic Oscillator Well</option>
+            </select>
+        </div>
+
+        <div class="control-group">
+            <label for="momentumSlider">Initial Packet Momentum (k₀):</label>
+            <input type="range" id="momentumSlider" min="1" max="10" step="0.5" value="5" oninput="resetWavePacket()">
+        </div>
+
+        <button class="btn" onclick="toggleAudio()">🔊 Toggle Quantum Audio Synth</button>
+
+        <div class="status-box" id="quantumInfo">
+            <strong>State:</strong> Wave Packet Evolving<br>
+            Solving Time-Dependent Schrödinger Equation in 3D WebGL Space.
+        </div>
+    </div>
+
+    <script>
+        // --- 1. THREE.JS ENGINE SETUP ---
+        const canvas = document.getElementById('webgl-canvas');
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x020617, 0.02);
+
+        const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 20, 25);
+
+        const renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.05;
+
+        // --- 2. GRID & LIGHTING ---
+        const gridHelper = new THREE.GridHelper(30, 30, 0x0284c7, 0x1e293b);
+        gridHelper.position.y = -2;
+        scene.add(gridHelper);
+
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambientLight);
+
+        const pointLight = new THREE.PointLight(0x38bdf8, 2, 50);
+        pointLight.position.set(0, 15, 0);
+        scene.add(pointLight);
+
+        // --- 3. QUANTUM WAVE PACKET SIMULATION DATA ---
+        const N = 60; // Grid Resolution
+        const dx = 0.5;
+        let PsiReal = new Float32Array(N * N);
+        let PsiImag = new Float32Array(N * N);
+        let V = new Float32Array(N * N);
+
+        // WebGL Particle Mesh Representation
+        const particleCount = N * N;
+        const geometry = new THREE.BufferGeometry();
+        const positions = new Float32Array(particleCount * 3);
+        const colors = new Float32Array(particleCount * 3);
+
+        for (let i = 0; i < N; i++) {
+            for (let j = 0; j < N; j++) {
+                let idx = i * N + j;
+                positions[idx * 3] = (i - N / 2) * dx;
+                positions[idx * 3 + 1] = 0;
+                positions[idx * 3 + 2] = (j - N / 2) * dx;
+            }
+        }
+
+        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+        const material = new THREE.PointsMaterial({
+            size: 0.35,
+            vertexColors: true,
+            transparent: true,
+            opacity: 0.85
+        });
+
+        const pointCloud = new THREE.Points(geometry, material);
+        scene.add(pointCloud);
+
+        // --- 4. WAVE PACKET INITIALIZATION ---
+        function resetWavePacket() {
+            const k0 = parseFloat(document.getElementById('momentumSlider').value);
+            const barrierType = document.getElementById('barrierSelect').value;
+
+            // Clear Potential V(r)
+            V.fill(0);
+
+            // Construct Potential Barriers
+            for (let i = 0; i < N; i++) {
+                for (let j = 0; j < N; j++) {
+                    let idx = i * N + j;
+                    let x = (i - N / 2) * dx;
+                    let z = (j - N / 2) * dx;
+
+                    if (barrierType === 'tunnel' && Math.abs(x) < 1.0) {
+                        V[idx] = 8.0; // Solid potential step
+                    } else if (barrierType === 'double' && Math.abs(x) < 1.0) {
+                        if (Math.abs(z) > 2.0 || Math.abs(z) < 0.5) {
+                            V[idx] = 12.0; // Double slit barrier
+                        }
+                    } else if (barrierType === 'harmonic') {
+                        V[idx] = 0.05 * (x * x + z * z); // Parabolic well
+                    }
+                }
+            }
+
+            // Gaussian Wave Packet centered at (-10, 0)
+            const x0 = -8.0, z0 = 0.0, sigma = 2.0;
+            for (let i = 0; i < N; i++) {
+                for (let j = 0; j < N; j++) {
+                    let idx = i * N + j;
+                    let x = (i - N / 2) * dx;
+                    let z = (j - N / 2) * dx;
+
+                    let envelope = Math.exp(-((x - x0) ** 2 + (z - z0) ** 2) / (2 * sigma ** 2));
+                    PsiReal[idx] = envelope * Math.cos(k0 * x);
+                    PsiImag[idx] = envelope * Math.sin(k0 * x);
+                }
+            }
+        }
+
+        // --- 5. SCHRÖDINGER STEP SOLVER ---
+        const dt = 0.04;
+        function updateQuantumState() {
+            // Update Real part from Imaginary part
+            for (let i = 1; i < N - 1; i++) {
+                for (let j = 1; j < N - 1; j++) {
+                    let idx = i * N + j;
+                    let laplacianImag = (PsiImag[(i + 1) * N + j] + PsiImag[(i - 1) * N + j] +
+                                         PsiImag[i * N + (j + 1)] + PsiImag[i * N + (j - 1)] -
+                                         4 * PsiImag[idx]) / (dx * dx);
+
+                    PsiReal[idx] += (-0.5 * laplacianImag + V[idx] * PsiImag[idx]) * dt;
+                }
+            }
+
+            // Update Imaginary part from Real part
+            for (let i = 1; i < N - 1; i++) {
+                for (let j = 1; j < N - 1; j++) {
+                    let idx = i * N + j;
+                    let laplacianReal = (PsiReal[(i + 1) * N + j] + PsiReal[(i - 1) * N + j] +
+                                         PsiReal[i * N + (j + 1)] + PsiReal[i * N + (j - 1)] -
+                                         4 * PsiReal[idx]) / (dx * dx);
+
+                    PsiImag[idx] -= (-0.5 * laplacianReal + V[idx] * PsiReal[idx]) * dt;
+                }
+            }
+
+            // Render positions and colors based on Probability Density |Ψ|²
+            const posAttr = geometry.attributes.position;
+            const colAttr = geometry.attributes.color;
+
+            let totalDensity = 0;
+
+            for (let i = 0; i < N; i++) {
+                for (let j = 0; j < N; j++) {
+                    let idx = i * N + j;
+                    let probDensity = PsiReal[idx] ** 2 + PsiImag[idx] ** 2;
+                    totalDensity += probDensity;
+
+                    posAttr.setY(idx, probDensity * 3.0 + V[idx] * 0.2);
+
+                    // Phase angle Arg(Ψ) color mapping
+                    let phase = Math.atan2(PsiImag[idx], PsiReal[idx]);
+                    let color = new THREE.Color().setHSL((phase + Math.PI) / (2 * Math.PI), 0.9, Math.min(0.8, probDensity * 1.5 + 0.1));
+
+                    colAttr.setXYZ(idx, color.r, color.g, color.b);
+                }
+            }
+
+            posAttr.needsUpdate = true;
+            colAttr.needsUpdate = true;
+
+            updateAudioSynth(totalDensity);
+        }
+
+        // --- 6. WEB AUDIO HARMONIC SYNTHESIZER ---
+        let audioCtx = null;
+        let osc = null;
+        let gainNode = null;
+
+        function toggleAudio() {
+            if (!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                osc = audioCtx.createOscillator();
+                gainNode = audioCtx.createGain();
+
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(220, audioCtx.currentTime);
+                gainNode.gain.setValueAtTime(0.05, audioCtx.currentTime);
+
+                osc.connect(gainNode);
+                gainNode.connect(audioCtx.destination);
+                osc.start();
+            } else {
+                if (audioCtx.state === 'running') {
+                    audioCtx.suspend();
+                } else {
+                    audioCtx.resume();
+                }
+            }
+        }
+
+        function updateAudioSynth(density) {
+            if (audioCtx && osc && audioCtx.state === 'running') {
+                let targetFreq = 180 + density * 1.2;
+                osc.frequency.setTargetAtTime(Math.min(800, targetFreq), audioCtx.currentTime, 0.1);
+            }
+        }
+
+        // --- 7. ANIMATION LOOP ---
+        resetWavePacket();
+
+        function animate() {
+            requestAnimationFrame(animate);
+            updateQuantumState();
+            controls.update();
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        // Responsive Resizing
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+                  </html>
+                  
